@@ -54,12 +54,20 @@ public class Hero : MonoBehaviour {
 
     }
 
+    public float maxHealth;
+    public float currHealth;
+
+    // Components.
+    BoxCollider2D hitbox;
+    Vector2 hitboxOrigin;
+
     // Properties.
     [Space(5), Header("Switches")]
     public bool randomize;
     public bool standard;
     public bool reevaluate;
     public float movement;
+    public bool hurt;
 
     [Space(5), Header("Jumping")]
     public float height;
@@ -67,9 +75,18 @@ public class Hero : MonoBehaviour {
     public float gravity;
     public int jumpTicks;
 
+    [Space(5), Header("Knockback")]
+    public float stunTicks;
+    public int knockbackTicks;
+    public float vKnockbackForce;
+    public float hKnockbackForce;
+    public float knockbackGravity;
+
     [Space(5), Header("Combos")]
     public Transform hitNode;
+    private Vector3 hitNodeOrigin;
     public bool attack;
+    public bool attackHit;
     public float comboTicks;
     public float comboChainCooldown;
     public int comboCount; // The current combo.
@@ -85,49 +102,63 @@ public class Hero : MonoBehaviour {
 
     // Attack Damage
     public float attackDamage;
-    public float m_AttackDamage => attackDamageRange.Evaluate(Stats.StatRange.Ratio(stats.strength));
-    public RandomParams attackDamageRange;
+    public float m_AttackDamage => AttackDamageRange.Evaluate(Stats.StatRange.Ratio(stats.strength));
+    public static RandomParams AttackDamageRange = new RandomParams(1f, 7f);
 
     // Attack Speed
     public float attackSpeed;
-    [HideInInspector] public float m_AttackSpeed => attackSpeedRange.Evaluate(Stats.StatRange.Ratio(stats.agility));
-    public RandomParams attackSpeedRange;
+    [HideInInspector] public float m_AttackSpeed => AttackSpeedRange.Evaluate(Stats.StatRange.Ratio(stats.agility));
+    public static RandomParams AttackSpeedRange = new RandomParams(1f, 2f);
 
     // Movement Speed
     public float movementSpeed;
-    [HideInInspector] public float m_MovementSpeed => movementSpeedRange.Evaluate(Stats.StatRange.Ratio(stats.speed));
-    public RandomParams movementSpeedRange;
+    [HideInInspector] public float m_MovementSpeed => MovementSpeedRange.Evaluate(Stats.StatRange.Ratio(stats.speed));
+    public static RandomParams MovementSpeedRange = new RandomParams(3f, 7.5f);
 
     // Health
-    public float health;
-    [HideInInspector] public float m_Health => healthRange.Evaluate(Stats.StatRange.Ratio(stats.vitality));
-    public RandomParams healthRange;
+
+    [HideInInspector] public float m_Health => HealthRange.Evaluate(Stats.StatRange.Ratio(stats.vitality));
+    public static RandomParams HealthRange = new RandomParams(5f, 50f);
 
     // Health Regen
     public float healthRegen;
-    [HideInInspector] public float m_HealthRegen => healthRegenRange.Evaluate(Stats.StatRange.Ratio(stats.vitality));
-    public RandomParams healthRegenRange;
+    [HideInInspector] public float m_HealthRegen => HealthRegenRange.Evaluate(Stats.StatRange.Ratio(stats.vitality));
+    public static RandomParams HealthRegenRange = new RandomParams(0.05f, 2f);
 
     // Attack Defense
     public float attackDefense;
-    [HideInInspector] public float m_AttackDefense => attackDefenseRange.Evaluate(Stats.StatRange.Ratio(stats.toughness));
-    public RandomParams attackDefenseRange;
+    [HideInInspector] public float m_AttackDefense => AttackDefenseRange.Evaluate(Stats.StatRange.Ratio(stats.toughness));
+    public static RandomParams AttackDefenseRange = new RandomParams(0f, 0.75f);
 
     // Special Defense
     public float specialDefense;
-    [HideInInspector] public float m_SpecialDefense => specialDefenseRange.Evaluate(Stats.StatRange.Ratio(stats.vitality));
-    public RandomParams specialDefenseRange;
+    [HideInInspector] public float m_SpecialDefense => SpecialDefenseRange.Evaluate(Stats.StatRange.Ratio(stats.vitality));
+    public static RandomParams SpecialDefenseRange = new RandomParams(0f, 0.75f);
 
     // Energy Capacity
     public float energyCapacity;
-    [HideInInspector] public float m_EnergyCapacity => energyCapacityRange.Evaluate(Stats.StatRange.Ratio(stats.energy));
-    public RandomParams energyCapacityRange;
+    [HideInInspector] public float m_EnergyCapacity => EnergyCapacityRange.Evaluate(Stats.StatRange.Ratio(stats.energy));
+    public static RandomParams EnergyCapacityRange = new RandomParams(1f, 1f);
 
     // Energy Regen
     public float energyRegen;
-    [HideInInspector] public float m_EnergyRegen => energyRegenRange.Evaluate(Stats.StatRange.Ratio(stats.energy));
-    public RandomParams energyRegenRange;
+    [HideInInspector] public float m_EnergyRegen => EnergyRegenRange.Evaluate(Stats.StatRange.Ratio(stats.energy));
+    public RandomParams EnergyRegenRange = new RandomParams(0f, 0f);
     #endregion STATS
+
+    // Runs once before the first frame.
+    void Start() {
+
+        hitbox = GetComponent<BoxCollider2D>();
+        hitboxOrigin = hitbox.offset;
+        hitNodeOrigin = hitNode.transform.localPosition;
+
+        jumpTicks = -1;
+        knockbackTicks = -1;
+
+        comboCount = 1;
+        knockbackGravity = gravity;
+    }
     
     // Runs once every frame.
     void Update() {
@@ -139,6 +170,9 @@ public class Hero : MonoBehaviour {
         }
         if (standard) {
             stats = new Stats(5, 5, 5, 5, 5, 5, 5, 5);
+            if (GetComponent<Enemy>() != null) {
+                stats = new Stats(2, 2, 2, 2, 2, 2, 2, 2);
+            }
             reevaluate = true;
             standard = false;
         }
@@ -147,23 +181,36 @@ public class Hero : MonoBehaviour {
             reevaluate = false;
         }
 
-        Input();
+        Stun();
+        Knockback();
+        Regen();
+
+        if (stunTicks > 0f) {
+            return;
+        }
+
         Move();
         Attack();
         Jump();
+        // Point();
+        Bounds();
     }
 
     // Updates the hero based on its stats.
     void EvaluateStats() {
+
         attackDamage = m_AttackDamage;
 
         attackSpeed = m_AttackSpeed;
         attackCooldown = 1f / (2f * m_AttackSpeed);
-        comboAttackCooldown = 1f / (.5f * m_AttackSpeed);
-        comboChainCooldown = 1f / (.35f * m_AttackSpeed);   
+        comboAttackCooldown = 1f / (m_AttackSpeed);
+        comboChainCooldown = 1f / (.5f * m_AttackSpeed);   
 
         movementSpeed = m_MovementSpeed;
-        health = m_Health;
+
+        maxHealth = m_Health;
+        currHealth = m_Health;
+
         healthRegen = m_HealthRegen;
         attackDefense = m_AttackDefense;
         specialDefense = m_SpecialDefense;
@@ -171,20 +218,14 @@ public class Hero : MonoBehaviour {
         energyRegen = m_EnergyRegen;
     }
 
-    // Get the input.
-    void Input() {
-        movement = UnityEngine.Input.GetAxisRaw("Horizontal");
-        if (UnityEngine.Input.GetKeyDown(KeyCode.Space)) {
-            attack = true;
-        }
-
-        if (UnityEngine.Input.GetKeyDown(KeyCode.J) && jumpTicks == -1) {
-            jumpTicks = 0;
-        }
-    }
-
     // Move the hero.
     void Move() {
+        if (jumpTicks == -1 && attackTicks > 0f) {
+            movement = 0f;
+            if (attackTicks < attackCooldown / 2f) {
+                movement = .25f * transform.localScale.x;
+            }
+        }
         Vector3 deltaPosition = Vector3.right * movement * Time.deltaTime * movementSpeed;
         transform.position += deltaPosition;
     }
@@ -194,30 +235,38 @@ public class Hero : MonoBehaviour {
 
         comboTicks -= Time.deltaTime;
         if (comboTicks < 0) {
-            comboCount = 0;
+            comboCount = 1;
             comboTicks = 0;
         }
 
         attackTicks -= Time.deltaTime;
-        if (attackTicks > 0f) { return; }
+        if (attackTicks > 0f) {
+            if (attackHit && attackTicks < attackCooldown / 2f) {
+                Hit();
+                attackHit = false;
+            }
+            attack = false;
+            return; 
+        }
 
         attackTicks = 0f;
         if (attack) {
 
-            Hit();
-            attack = false;
+            attackHit = true;
 
             attackTicks = attackCooldown;
-            if (comboCount > 0 && comboCount % comboChain == 0) {
+            if (comboCount != 0 && comboCount % comboChain == 0) {
                 attackTicks = comboAttackCooldown;
             }
         }
+
+        attack = false;
 
     }
 
     void Jump() {
 
-        if (jumpTicks == -1) {
+        if (jumpTicks == -1 || attackTicks > 0f) {
             return;
         }
 
@@ -225,7 +274,7 @@ public class Hero : MonoBehaviour {
         if (currForce < 0.001f) {
             currForce = 0f;
         }
-        print(currForce);
+        
         height += currForce * Time.deltaTime;
         if (height > 0f) {
             jumpTicks += 1;
@@ -235,6 +284,13 @@ public class Hero : MonoBehaviour {
             height = 0f;
             jumpTicks = -1;
         }
+
+        hitbox.offset = hitboxOrigin + Vector2.up * height;
+        hitNode.transform.localPosition = hitNodeOrigin + Vector3.up * height;
+    }
+
+    void Bounds() {
+
     }
 
     void Hit() {
@@ -243,16 +299,104 @@ public class Hero : MonoBehaviour {
         bool hitAnEnemy = false;
         print(hits.Length);
         for (int i = 0; i < hits.Length; i++) {
-            Enemy enemy = hits[i].GetComponent<Enemy>();
-            if (enemy != null) {
+            Hero enemy = hits[i].GetComponent<Hero>();
+            if (enemy != this && enemy != null) {
                 hitAnEnemy = true;
-                enemy.Hurt();
+                enemy.Hurt(attackDamage);
+                float verticalForce = 70f;
+                float horizontalForce = 25f * -Mathf.Sign(enemy.transform.position.x - transform.position.x);
+                float gravityFactor = 1f;
+                if (comboCount != 0 && (comboCount) % comboChain == 0) {
+                    gravityFactor = .2f;
+                }
+                print(gravityFactor);
+                enemy.Knockback(verticalForce, horizontalForce, gravityFactor);
+                enemy.Stun(0.2f);
             }
         }
-        hitAnEnemy = true;
+        
         if (hitAnEnemy) {
             comboCount += 1;
             comboTicks = comboChainCooldown;
+        }
+        else {
+            comboCount = 1;
+            comboTicks = 0f;
+        }
+
+    }
+
+    void Regen() {
+        currHealth += healthRegen * Time.deltaTime;
+        if (currHealth > maxHealth) {
+            currHealth = maxHealth;
+        }
+    }
+
+    public void Hurt(float damage, bool special = false) {
+        float defense = special ? specialDefense : attackDefense;
+        damage *= (1 - defense);
+        currHealth -= damage;
+        comboCount = 1;
+        StartCoroutine(IEHurt());
+    }
+
+    private IEnumerator IEHurt() {
+        hurt = true;
+        yield return new WaitForSeconds(0.05f);
+        hurt = false;
+        if (currHealth <= 0f) {
+            Destroy(gameObject);
+        }
+        yield return null;
+    }
+
+    public void Knockback(float vForce = 0f, float hForce = 25f, float gravityFactor = 1f) {
+
+        if (knockbackTicks == -1 && vForce == 0f) {
+            return;
+        }
+        else if (vForce != 0f) {
+            knockbackTicks = 0;
+            vKnockbackForce = vForce;
+            hKnockbackForce = hForce;
+            knockbackGravity = gravity * gravityFactor;
+        }
+
+        vKnockbackForce *= Mathf.Pow(.995f, knockbackTicks);
+        hKnockbackForce *= Mathf.Pow(.995f, knockbackTicks);
+
+        if (vKnockbackForce < .001f) {
+            vKnockbackForce = 0f;
+        }
+        height += vKnockbackForce * Time.deltaTime;
+        transform.position -= transform.right * hKnockbackForce * Time.deltaTime;
+
+        if (height > 0f) {
+            knockbackTicks += 1;
+            height -= knockbackGravity * Time.deltaTime;
+        }
+        else if (height < 0f) {
+            height = 0f;
+            knockbackTicks = -1;
+            vKnockbackForce = 0f;
+            hKnockbackForce = .3f;
+            knockbackGravity = gravity;
+        }
+
+    }
+
+    public void Stun(float duration = 0f) {
+
+        if (duration > stunTicks) {
+            stunTicks = duration;
+            attackHit = false;
+            comboCount = 0;
+        }
+
+        stunTicks -= Time.deltaTime;
+        if (stunTicks < 0f) {
+            stunTicks = 0f;
         }
 
     }
@@ -260,6 +404,19 @@ public class Hero : MonoBehaviour {
     void OnDrawGizmos() {
 
         Gizmos.color = Color.white;
+        
+        Collider2D[] hits = Physics2D.OverlapCircleAll(hitNode.transform.position, 1f);
+        bool hitAnEnemy = false;
+        for (int i = 0; i < hits.Length; i++) {
+            Hero enemy = hits[i].GetComponent<Hero>();
+            if (enemy != this && enemy != null) {
+                hitAnEnemy = true;
+            }
+        }
+
+        if (hitAnEnemy) {
+            Gizmos.color = Color.red;
+        }
         Gizmos.DrawWireSphere(hitNode.transform.position, 1f);
 
     }
